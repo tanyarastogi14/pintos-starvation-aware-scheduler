@@ -29,6 +29,7 @@ static struct list ready_list;
 static struct list all_list;
 
 /** Idle thread. */
+
 static struct thread *idle_thread;
 
 /** Initial thread, the thread running init.c:main(). */
@@ -70,6 +71,17 @@ static void *alloc_frame (struct thread *, size_t size);
 static void schedule (void);
 void thread_schedule_tail (struct thread *prev);
 static tid_t allocate_tid (void);
+
+static bool
+thread_priority_more (const struct list_elem *a,
+                      const struct list_elem *b,
+                      void *aux UNUSED)
+{
+  const struct thread *ta = list_entry (a, struct thread, elem);
+  const struct thread *tb = list_entry (b, struct thread, elem);
+
+  return ta->priority < tb->priority;
+}
 
 /** Initializes the threading system by transforming the code
    that's currently running into a thread.  This can't work in
@@ -198,10 +210,14 @@ thread_create (const char *name, int priority,
   sf->eip = switch_entry;
   sf->ebp = 0;
 
-  /* Add to run queue. */
-  thread_unblock (t);
+   /* Add to run queue. */
+   thread_unblock (t);
 
-  return tid;
+   if (!intr_context ()
+      && thread_current ()->priority < t->priority)
+    thread_yield ();
+
+   return tid;
 }
 
 /** Puts the current thread to sleep.  It will not be scheduled
@@ -333,9 +349,20 @@ thread_foreach (thread_action_func *func, void *aux)
 
 /** Sets the current thread's priority to NEW_PRIORITY. */
 void
-thread_set_priority (int new_priority) 
+thread_set_priority (int new_priority)
 {
   thread_current ()->priority = new_priority;
+
+  if (!list_empty (&ready_list))
+    {
+      struct list_elem *max_elem;
+
+      max_elem = list_max (&ready_list, thread_priority_more, NULL);
+
+      if (thread_current ()->priority
+          < list_entry (max_elem, struct thread, elem)->priority)
+        thread_yield ();
+    }
 }
 
 /** Returns the current thread's priority. */
@@ -488,12 +515,19 @@ alloc_frame (struct thread *t, size_t size)
    will be in the run queue.)  If the run queue is empty, return
    idle_thread. */
 static struct thread *
-next_thread_to_run (void) 
+next_thread_to_run (void)
 {
   if (list_empty (&ready_list))
     return idle_thread;
   else
-    return list_entry (list_pop_front (&ready_list), struct thread, elem);
+    {
+      struct list_elem *max_elem;
+
+      max_elem = list_max (&ready_list, thread_priority_more, NULL);
+      list_remove (max_elem);
+
+      return list_entry (max_elem, struct thread, elem);
+    }
 }
 
 /** Completes a thread switch by activating the new thread's page
